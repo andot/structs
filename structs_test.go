@@ -558,6 +558,31 @@ func TestMap_Anonymous(t *testing.T) {
 	}
 }
 
+func TestMap_FlatnestedEmptyShouldNotPanic(t *testing.T) {
+	type A struct {
+		Name string `structs:"name,omitempty"`
+	}
+	a := A{}
+
+	type B struct {
+		A `structs:",flatten"`
+	}
+	b := &B{}
+	b.A = a
+
+	m := Map(b)
+
+	_, ok := m["A"].(map[string]interface{})
+	if ok {
+		t.Error("Embedded A struct with tag flatten has to be flat in the map")
+	}
+
+	expectedMap := map[string]interface{}{}
+	if !reflect.DeepEqual(m, expectedMap) {
+		t.Errorf("The exprected map %+v does't correspond to %+v", expectedMap, m)
+	}
+}
+
 func TestMap_Flatnested(t *testing.T) {
 	type A struct {
 		Name string
