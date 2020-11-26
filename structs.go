@@ -140,8 +140,10 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		}
 
 		if isSubStruct && (tagOpts.Has("flatten")) {
-			for k := range finalVal.(map[string]interface{}) {
-				out[k] = finalVal.(map[string]interface{})[k]
+			if m, ok := finalVal.(map[string]interface{}); ok {
+				for k, v := range m {
+					out[k] = v
+				}
 			}
 		} else {
 			out[name] = finalVal
