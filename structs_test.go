@@ -113,6 +113,36 @@ func TestMap_Tag(t *testing.T) {
 
 }
 
+func TestMapWithPrefix_Tag(t *testing.T) {
+	var T = struct {
+		A string `structs:"x"`
+		B int    `structs:"y"`
+		C bool   `structs:"z"`
+	}{
+		A: "a-value",
+		B: 2,
+		C: true,
+	}
+
+	prefix := "p_"
+	a := MapWithPrefix(T, prefix)
+
+	inMap := func(key interface{}) bool {
+		for k := range a {
+			if reflect.DeepEqual(k, key) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, key := range []string{"x", "y", "z"} {
+		if !inMap(prefix + key) {
+			t.Errorf("Map should have the key %v", prefix+key)
+		}
+	}
+}
+
 func TestMap_CustomTag(t *testing.T) {
 	var T = struct {
 		A string `json:"x"`

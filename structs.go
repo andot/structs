@@ -84,9 +84,19 @@ func (s *Struct) Map() map[string]interface{} {
 	return out
 }
 
+func (s *Struct) MapWithPrefix(prefix string) map[string]interface{} {
+	out := make(map[string]interface{})
+	s.FillMapWithPrefix(out, prefix)
+	return out
+}
+
 // FillMap is the same as Map. Instead of returning the output, it fills the
 // given map.
 func (s *Struct) FillMap(out map[string]interface{}) {
+	s.FillMapWithPrefix(out, "")
+}
+
+func (s *Struct) FillMapWithPrefix(out map[string]interface{}, prefix string) {
 	if out == nil {
 		return
 	}
@@ -134,7 +144,7 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		if tagOpts.Has("string") {
 			s, ok := val.Interface().(fmt.Stringer)
 			if ok {
-				out[name] = s.String()
+				out[prefix+name] = s.String()
 			}
 			continue
 		}
@@ -142,11 +152,11 @@ func (s *Struct) FillMap(out map[string]interface{}) {
 		if isSubStruct && (tagOpts.Has("flatten")) {
 			if m, ok := finalVal.(map[string]interface{}); ok {
 				for k, v := range m {
-					out[k] = v
+					out[prefix+k] = v
 				}
 			}
 		} else {
-			out[name] = finalVal
+			out[prefix+name] = finalVal
 		}
 	}
 }
@@ -446,6 +456,10 @@ func strctVal(s interface{}) reflect.Value {
 // refer to Struct types Map() method. It panics if s's kind is not struct.
 func Map(s interface{}) map[string]interface{} {
 	return New(s).Map()
+}
+
+func MapWithPrefix(s interface{}, prefix string) map[string]interface{} {
+	return New(s).MapWithPrefix(prefix)
 }
 
 // FillMap is the same as Map. Instead of returning the output, it fills the
