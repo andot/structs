@@ -143,6 +143,37 @@ func TestMapWithPrefix_Tag(t *testing.T) {
 	}
 }
 
+func TestFillMapWithPrefix_Tag(t *testing.T) {
+	var T = struct {
+		A string `structs:"x"`
+		B int    `structs:"y"`
+		C bool   `structs:"z"`
+	}{
+		A: "a-value",
+		B: 2,
+		C: true,
+	}
+
+	var a = make(map[string]interface{})
+	prefix := "p_"
+	FillMapWithPrefix(T, a, prefix)
+
+	inMap := func(key interface{}) bool {
+		for k := range a {
+			if reflect.DeepEqual(k, key) {
+				return true
+			}
+		}
+		return false
+	}
+
+	for _, key := range []string{"x", "y", "z"} {
+		if !inMap(prefix + key) {
+			t.Errorf("Map should have the key %v", prefix+key)
+		}
+	}
+}
+
 func TestMap_CustomTag(t *testing.T) {
 	var T = struct {
 		A string `json:"x"`
@@ -158,8 +189,7 @@ func TestMap_CustomTag(t *testing.T) {
 	}
 	T.D.E = "e-value"
 
-	s := New(T)
-	s.TagName = "json"
+	s := New(T, "json")
 
 	a := s.Map()
 
@@ -199,15 +229,13 @@ func TestMap_MultipleCustomTag(t *testing.T) {
 		X string `aa:"ax"`
 	}{"a_value"}
 
-	aStruct := New(A)
-	aStruct.TagName = "aa"
+	aStruct := New(A, "aa")
 
 	var B = struct {
 		X string `bb:"bx"`
 	}{"b_value"}
 
-	bStruct := New(B)
-	bStruct.TagName = "bb"
+	bStruct := New(B, "bb")
 
 	a, b := aStruct.Map(), bStruct.Map()
 	if !reflect.DeepEqual(a, map[string]interface{}{"ax": "a_value"}) {
@@ -493,6 +521,35 @@ func TestMap_NestedSliceWithStructValues(t *testing.T) {
 	p := person{
 		Name: "test",
 		Addresses: []address{
+			{Country: "England"},
+			{Country: "Italy"},
+		},
+	}
+	mp := Map(p)
+
+	mpAddresses := mp["addresses"].([]interface{})
+	if _, exists := mpAddresses[0].(map[string]interface{})["Country"]; exists {
+		t.Errorf("Expecting customCountryName, but found Country")
+	}
+
+	if _, exists := mpAddresses[0].(map[string]interface{})["customCountryName"]; !exists {
+		t.Errorf("customCountryName key not found")
+	}
+}
+
+func TestMap_NestedArrayWithStructValues(t *testing.T) {
+	type address struct {
+		Country string `structs:"customCountryName"`
+	}
+
+	type person struct {
+		Name      string     `structs:"name"`
+		Addresses [2]address `structs:"addresses"`
+	}
+
+	p := person{
+		Name: "test",
+		Addresses: [2]address{
 			{Country: "England"},
 			{Country: "Italy"},
 		},
@@ -1395,9 +1452,8 @@ func TestTagWithStringOption(t *testing.T) {
 		}
 	}()
 
-	s := New(address)
+	s := New(address, "json")
 
-	s.TagName = "json"
 	m := s.Map()
 
 	if m["person"] != person.String() {
@@ -1437,9 +1493,8 @@ func TestNonStringerTagWithStringOption(t *testing.T) {
 		}
 	}()
 
-	s := New(d)
+	s := New(d, "json")
 
-	s.TagName = "json"
 	m := s.Map()
 
 	if _, exists := m["animal"]; exists {

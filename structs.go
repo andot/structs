@@ -3,8 +3,12 @@ package structs
 
 import (
 	"fmt"
+	"sync"
+	"unsafe"
 
 	"reflect"
+
+	"github.com/modern-go/reflect2"
 )
 
 var (
@@ -12,23 +16,123 @@ var (
 	// a more granular to tweak certain structs. Lookup the necessary functions
 	// for more info.
 	DefaultTagName = "structs" // struct's field default tag name
+
+	structInfoCache     = map[reflect.Type]*structInfo{}
+	structInfoCacheLock sync.RWMutex
 )
+
+type fieldAccessor struct {
+	t          reflect2.Type
+	alias      string
+	field      *reflect2.UnsafeStructField
+	zero       interface{}
+	omitempty  bool
+	omitnested bool
+	tostring   bool
+	flatten    bool
+	isStruct   bool
+	unexported bool
+}
+
+type structInfo struct {
+	t        *reflect2.UnsafeStructType
+	name     string
+	names    []string
+	fields   []*fieldAccessor
+	fieldMap map[string]*fieldAccessor
+}
+
+func newStructInfo(t reflect.Type, tagName string) (info *structInfo) {
+	t2 := reflect2.Type2(t).(*reflect2.UnsafeStructType)
+	fieldAccessors := getfieldAccessors(t2, tagName)
+	n := len(fieldAccessors)
+	info = &structInfo{
+		t:        t2,
+		name:     t2.Name(),
+		names:    make([]string, 0, n),
+		fields:   fieldAccessors,
+		fieldMap: make(map[string]*fieldAccessor, n),
+	}
+	for _, f := range fieldAccessors {
+		name := f.field.Name()
+		if !f.unexported {
+			info.names = append(info.names, name)
+		}
+		info.fieldMap[name] = f
+	}
+	return info
+}
+
+func getfieldAccessors(t reflect2.StructType, tagName string) (fields []*fieldAccessor) {
+	for i, n := 0, t.NumField(); i < n; i++ {
+		f := t.Field(i)
+		ft := f.Type()
+		tag := f.Tag().Get(tagName)
+		if tag == "-" {
+			continue
+		}
+		alias, opitons := parseTag(tag)
+		if alias == "" {
+			alias = f.Name()
+		}
+		typ := ft.Type1()
+		field := &fieldAccessor{
+			t:          ft,
+			alias:      alias,
+			field:      f.(*reflect2.UnsafeStructField),
+			zero:       reflect.Zero(typ).Interface(),
+			omitempty:  opitons.Has("omitempty"),
+			omitnested: opitons.Has("omitnested"),
+			tostring:   opitons.Has("string"),
+			flatten:    opitons.Has("flatten"),
+			unexported: f.PkgPath() != "",
+		}
+		if ft.Kind() == reflect.Ptr {
+			ft = ft.(*reflect2.UnsafePtrType).Elem()
+		}
+		field.isStruct = (ft.Kind() == reflect.Struct)
+		field.flatten = field.flatten && !field.omitnested && (ft.Kind() == reflect.Map || field.isStruct)
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+func getStructInfo(t reflect.Type, tagName string) *structInfo {
+	structInfoCacheLock.RLock()
+	if info, ok := structInfoCache[t]; ok {
+		structInfoCacheLock.RUnlock()
+		return info
+	}
+	structInfoCacheLock.RUnlock()
+	structInfoCacheLock.Lock()
+	info := newStructInfo(t, tagName)
+	structInfoCache[t] = info
+	structInfoCacheLock.Unlock()
+	return info
+}
 
 // Struct encapsulates a struct type to provide several high level functions
 // around the struct.
 type Struct struct {
 	raw     interface{}
 	value   reflect.Value
-	TagName string
+	tagName string
+	*structInfo
 }
 
 // New returns a new *Struct with the struct s. It panics if the s's kind is
 // not struct.
-func New(s interface{}) *Struct {
+func New(s interface{}, tagName ...string) *Struct {
+	name := DefaultTagName
+	if len(tagName) > 0 {
+		name = tagName[0]
+	}
+	value := strctVal(s)
 	return &Struct{
-		raw:     s,
-		value:   strctVal(s),
-		TagName: DefaultTagName,
+		raw:        s,
+		value:      value,
+		tagName:    name,
+		structInfo: getStructInfo(value.Type(), name),
 	}
 }
 
@@ -38,50 +142,48 @@ func New(s interface{}) *Struct {
 // can be changed in the struct field's tag value. The "structs" key in the
 // struct's field tag value is the key name. Example:
 //
-//   // Field appears in map as key "myName".
-//   Name string `structs:"myName"`
+//	// Field appears in map as key "myName".
+//	Name string `structs:"myName"`
 //
 // A tag value with the content of "-" ignores that particular field. Example:
 //
-//   // Field is ignored by this package.
-//   Field bool `structs:"-"`
+//	// Field is ignored by this package.
+//	Field bool `structs:"-"`
 //
 // A tag value with the content of "string" uses the stringer to get the value. Example:
 //
-//   // The value will be output of Animal's String() func.
-//   // Map will panic if Animal does not implement String().
-//   Field *Animal `structs:"field,string"`
+//	// The value will be output of Animal's String() func.
+//	// Map will panic if Animal does not implement String().
+//	Field *Animal `structs:"field,string"`
 //
 // A tag value with the option of "flatten" used in a struct field is to flatten its fields
 // in the output map. Example:
 //
-//   // The FieldStruct's fields will be flattened into the output map.
-//   FieldStruct time.Time `structs:",flatten"`
+//	// The FieldStruct's fields will be flattened into the output map.
+//	FieldStruct time.Time `structs:",flatten"`
 //
 // A tag value with the option of "omitnested" stops iterating further if the type
 // is a struct. Example:
 //
-//   // Field is not processed further by this package.
-//   Field time.Time     `structs:"myName,omitnested"`
-//   Field *http.Request `structs:",omitnested"`
+//	// Field is not processed further by this package.
+//	Field time.Time     `structs:"myName,omitnested"`
+//	Field *http.Request `structs:",omitnested"`
 //
 // A tag value with the option of "omitempty" ignores that particular field if
 // the field value is empty. Example:
 //
-//   // Field appears in map as key "myName", but the field is
-//   // skipped if empty.
-//   Field string `structs:"myName,omitempty"`
+//	// Field appears in map as key "myName", but the field is
+//	// skipped if empty.
+//	Field string `structs:"myName,omitempty"`
 //
-//   // Field appears in map as key "Field" (the default), but
-//   // the field is skipped if empty.
-//   Field string `structs:",omitempty"`
+//	// Field appears in map as key "Field" (the default), but
+//	// the field is skipped if empty.
+//	Field string `structs:",omitempty"`
 //
 // Note that only exported fields of a struct can be accessed, non exported
 // fields will be neglected.
 func (s *Struct) Map() map[string]interface{} {
-	out := make(map[string]interface{})
-	s.FillMap(out)
-	return out
+	return s.MapWithPrefix("")
 }
 
 func (s *Struct) MapWithPrefix(prefix string) map[string]interface{} {
@@ -100,63 +202,36 @@ func (s *Struct) FillMapWithPrefix(out map[string]interface{}, prefix string) {
 	if out == nil {
 		return
 	}
-
-	fields := s.structFields()
-
-	for _, field := range fields {
-		name := field.Name
-		val := s.value.FieldByName(name)
-		isSubStruct := false
-		var finalVal interface{}
-
-		tagName, tagOpts := parseTag(field.Tag.Get(s.TagName))
-		if tagName != "" {
-			name = tagName
+	p := reflect2.PtrOf(s.raw)
+	for _, f := range s.fields {
+		// we can't access the value of unexported fields
+		if f.unexported {
+			continue
 		}
-
-		// if the value is a zero value and the field is marked as omitempty do
-		// not include
-		if tagOpts.Has("omitempty") {
-			zero := reflect.Zero(val.Type()).Interface()
-			current := val.Interface()
-
-			if reflect.DeepEqual(current, zero) {
+		name := f.alias
+		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
+		if f.omitempty {
+			if reflect.DeepEqual(f.zero, val) {
 				continue
 			}
 		}
-
-		if !tagOpts.Has("omitnested") {
-			finalVal = s.nested(val)
-
-			v := reflect.ValueOf(val.Interface())
-			if v.Kind() == reflect.Ptr {
-				v = v.Elem()
-			}
-
-			switch v.Kind() {
-			case reflect.Map, reflect.Struct:
-				isSubStruct = true
-			}
-		} else {
-			finalVal = val.Interface()
-		}
-
-		if tagOpts.Has("string") {
-			s, ok := val.Interface().(fmt.Stringer)
-			if ok {
+		if f.tostring {
+			if s, ok := val.(fmt.Stringer); ok {
 				out[prefix+name] = s.String()
 			}
 			continue
 		}
-
-		if isSubStruct && (tagOpts.Has("flatten")) {
-			if m, ok := finalVal.(map[string]interface{}); ok {
+		if !f.omitnested {
+			val = s.nested(val)
+		}
+		if f.flatten {
+			if m, ok := val.(map[string]interface{}); ok {
 				for k, v := range m {
 					out[prefix+k] = v
 				}
 			}
 		} else {
-			out[prefix+name] = finalVal
+			out[prefix+name] = val
 		}
 	}
 }
@@ -165,121 +240,80 @@ func (s *Struct) FillMapWithPrefix(out map[string]interface{}, prefix string) {
 // struct tag with the content of "-" ignores the that particular field.
 // Example:
 //
-//   // Field is ignored by this package.
-//   Field int `structs:"-"`
+//	// Field is ignored by this package.
+//	Field int `structs:"-"`
 //
 // A value with the option of "omitnested" stops iterating further if the type
 // is a struct. Example:
 //
-//   // Fields is not processed further by this package.
-//   Field time.Time     `structs:",omitnested"`
-//   Field *http.Request `structs:",omitnested"`
+//	// Fields is not processed further by this package.
+//	Field time.Time     `structs:",omitnested"`
+//	Field *http.Request `structs:",omitnested"`
 //
 // A tag value with the option of "omitempty" ignores that particular field and
 // is not added to the values if the field value is empty. Example:
 //
-//   // Field is skipped if empty
-//   Field string `structs:",omitempty"`
+//	// Field is skipped if empty
+//	Field string `structs:",omitempty"`
 //
 // Note that only exported fields of a struct can be accessed, non exported
 // fields  will be neglected.
-func (s *Struct) Values() []interface{} {
-	fields := s.structFields()
-
-	var t []interface{}
-
-	for _, field := range fields {
-		val := s.value.FieldByName(field.Name)
-
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
-
-		// if the value is a zero value and the field is marked as omitempty do
-		// not include
-		if tagOpts.Has("omitempty") {
-			zero := reflect.Zero(val.Type()).Interface()
-			current := val.Interface()
-
-			if reflect.DeepEqual(current, zero) {
+func (s *Struct) Values() (values []interface{}) {
+	p := reflect2.PtrOf(s.raw)
+	for _, f := range s.fields {
+		// we can't access the value of unexported fields
+		if f.unexported {
+			continue
+		}
+		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
+		if f.omitempty {
+			if reflect.DeepEqual(f.zero, val) {
 				continue
 			}
 		}
-
-		if tagOpts.Has("string") {
-			s, ok := val.Interface().(fmt.Stringer)
-			if ok {
-				t = append(t, s.String())
+		if f.tostring {
+			if s, ok := val.(fmt.Stringer); ok {
+				values = append(values, s.String())
 			}
-			continue
 		}
-
-		if IsStruct(val.Interface()) && !tagOpts.Has("omitnested") {
-			// look out for embedded structs, and convert them to a
-			// []interface{} to be added to the final values slice
-			t = append(t, Values(val.Interface())...)
+		if f.isStruct && !f.omitnested {
+			values = append(values, New(val, s.tagName).Values()...)
 		} else {
-			t = append(t, val.Interface())
+			values = append(values, val)
 		}
 	}
-
-	return t
+	return
 }
 
 // Fields returns a slice of Fields. A struct tag with the content of "-"
 // ignores the checking of that particular field. Example:
 //
-//   // Field is ignored by this package.
-//   Field bool `structs:"-"`
+//	// Field is ignored by this package.
+//	Field bool `structs:"-"`
 //
 // It panics if s's kind is not struct.
-func (s *Struct) Fields() []*Field {
-	return getFields(s.value, s.TagName)
+func (s *Struct) Fields() (fields []*Field) {
+	for _, f := range s.fields {
+		fields = append(fields, &Field{
+			value:      s.value.FieldByIndex(f.field.Index()),
+			field:      f.field.StructField,
+			defaultTag: s.tagName,
+		})
+	}
+	return fields
 }
 
 // Names returns a slice of field names. A struct tag with the content of "-"
 // ignores the checking of that particular field. Example:
 //
-//   // Field is ignored by this package.
-//   Field bool `structs:"-"`
+//	// Field is ignored by this package.
+//	Field bool `structs:"-"`
 //
 // It panics if s's kind is not struct.
 func (s *Struct) Names() []string {
-	fields := getFields(s.value, s.TagName)
-
-	names := make([]string, len(fields))
-
-	for i, field := range fields {
-		names[i] = field.Name()
-	}
-
+	names := make([]string, len(s.names))
+	copy(names, s.names)
 	return names
-}
-
-func getFields(v reflect.Value, tagName string) []*Field {
-	if v.Kind() == reflect.Ptr {
-		v = v.Elem()
-	}
-
-	t := v.Type()
-
-	var fields []*Field
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-
-		if tag := field.Tag.Get(tagName); tag == "-" {
-			continue
-		}
-
-		f := &Field{
-			field: field,
-			value: v.FieldByName(field.Name),
-		}
-
-		fields = append(fields, f)
-
-	}
-
-	return fields
 }
 
 // Field returns a new Field struct that provides several high level functions
@@ -289,7 +323,6 @@ func (s *Struct) Field(name string) *Field {
 	if !ok {
 		panic("field not found")
 	}
-
 	return f
 }
 
@@ -297,17 +330,14 @@ func (s *Struct) Field(name string) *Field {
 // around a single struct field entity. The boolean returns true if the field
 // was found.
 func (s *Struct) FieldOk(name string) (*Field, bool) {
-	t := s.value.Type()
-
-	field, ok := t.FieldByName(name)
+	f, ok := s.fieldMap[name]
 	if !ok {
 		return nil, false
 	}
-
 	return &Field{
-		field:      field,
-		value:      s.value.FieldByName(name),
-		defaultTag: s.TagName,
+		value:      s.value.FieldByIndex(f.field.Index()),
+		field:      f.field.StructField,
+		defaultTag: s.tagName,
 	}, true
 }
 
@@ -315,46 +345,36 @@ func (s *Struct) FieldOk(name string) (*Field, bool) {
 // initialized) A struct tag with the content of "-" ignores the checking of
 // that particular field. Example:
 //
-//   // Field is ignored by this package.
-//   Field bool `structs:"-"`
+//	// Field is ignored by this package.
+//	Field bool `structs:"-"`
 //
 // A value with the option of "omitnested" stops iterating further if the type
 // is a struct. Example:
 //
-//   // Field is not processed further by this package.
-//   Field time.Time     `structs:"myName,omitnested"`
-//   Field *http.Request `structs:",omitnested"`
+//	// Field is not processed further by this package.
+//	Field time.Time     `structs:"myName,omitnested"`
+//	Field *http.Request `structs:",omitnested"`
 //
 // Note that only exported fields of a struct can be accessed, non exported
 // fields  will be neglected. It panics if s's kind is not struct.
 func (s *Struct) IsZero() bool {
-	fields := s.structFields()
-
-	for _, field := range fields {
-		val := s.value.FieldByName(field.Name)
-
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
-
-		if IsStruct(val.Interface()) && !tagOpts.Has("omitnested") {
-			ok := IsZero(val.Interface())
-			if !ok {
-				return false
-			}
-
+	p := reflect2.PtrOf(s.raw)
+	for _, f := range s.fields {
+		// we can't access the value of unexported fields
+		if f.unexported {
 			continue
 		}
-
-		// zero value of the given field, such as "" for string, 0 for int
-		zero := reflect.Zero(val.Type()).Interface()
-
-		//  current value of the given field
-		current := val.Interface()
-
-		if !reflect.DeepEqual(current, zero) {
+		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
+		if f.isStruct && !f.omitnested {
+			if !New(val, s.tagName).IsZero() {
+				return false
+			}
+			continue
+		}
+		if !reflect.DeepEqual(f.zero, val) {
 			return false
 		}
 	}
-
 	return true
 }
 
@@ -362,79 +382,43 @@ func (s *Struct) IsZero() bool {
 // A struct tag with the content of "-" ignores the checking of that particular
 // field. Example:
 //
-//   // Field is ignored by this package.
-//   Field bool `structs:"-"`
+//	// Field is ignored by this package.
+//	Field bool `structs:"-"`
 //
 // A value with the option of "omitnested" stops iterating further if the type
 // is a struct. Example:
 //
-//   // Field is not processed further by this package.
-//   Field time.Time     `structs:"myName,omitnested"`
-//   Field *http.Request `structs:",omitnested"`
+//	// Field is not processed further by this package.
+//	Field time.Time     `structs:"myName,omitnested"`
+//	Field *http.Request `structs:",omitnested"`
 //
 // Note that only exported fields of a struct can be accessed, non exported
 // fields  will be neglected. It panics if s's kind is not struct.
 func (s *Struct) HasZero() bool {
-	fields := s.structFields()
-
-	for _, field := range fields {
-		val := s.value.FieldByName(field.Name)
-
-		_, tagOpts := parseTag(field.Tag.Get(s.TagName))
-
-		if IsStruct(val.Interface()) && !tagOpts.Has("omitnested") {
-			ok := HasZero(val.Interface())
-			if ok {
-				return true
-			}
-
+	p := reflect2.PtrOf(s.raw)
+	for _, f := range s.fields {
+		// we can't access the value of unexported fields
+		if f.unexported {
 			continue
 		}
-
-		// zero value of the given field, such as "" for string, 0 for int
-		zero := reflect.Zero(val.Type()).Interface()
-
-		//  current value of the given field
-		current := val.Interface()
-
-		if reflect.DeepEqual(current, zero) {
+		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
+		if f.isStruct && !f.omitnested {
+			if New(val, s.tagName).HasZero() {
+				return true
+			}
+			continue
+		}
+		if reflect.DeepEqual(f.zero, val) {
 			return true
 		}
 	}
-
 	return false
 }
 
 // Name returns the structs's type name within its package. For more info refer
 // to Name() function.
 func (s *Struct) Name() string {
-	return s.value.Type().Name()
-}
-
-// structFields returns the exported struct fields for a given s struct. This
-// is a convenient helper method to avoid duplicate code in some of the
-// functions.
-func (s *Struct) structFields() []reflect.StructField {
-	t := s.value.Type()
-
-	var f []reflect.StructField
-
-	for i := 0; i < t.NumField(); i++ {
-		field := t.Field(i)
-		// we can't access the value of unexported fields
-		if field.PkgPath != "" {
-			continue
-		}
-
-		// don't check if it's omitted
-		if tag := field.Tag.Get(s.TagName); tag == "-" {
-			continue
-		}
-
-		f = append(f, field)
-	}
-
-	return f
+	return s.t.Name()
 }
 
 func strctVal(s interface{}) reflect.Value {
@@ -466,6 +450,10 @@ func MapWithPrefix(s interface{}, prefix string) map[string]interface{} {
 // given map.
 func FillMap(s interface{}, out map[string]interface{}) {
 	New(s).FillMap(out)
+}
+
+func FillMapWithPrefix(s interface{}, out map[string]interface{}, prefix string) {
+	New(s).FillMapWithPrefix(out, prefix)
 }
 
 // Values converts the given struct to a []interface{}. For more info refer to
@@ -506,11 +494,6 @@ func IsStruct(s interface{}) bool {
 		v = v.Elem()
 	}
 
-	// uninitialized zero value of a struct
-	if v.Kind() == reflect.Invalid {
-		return false
-	}
-
 	return v.Kind() == reflect.Struct
 }
 
@@ -522,79 +505,91 @@ func Name(s interface{}) string {
 
 // nested retrieves recursively all types for the given value and returns the
 // nested value.
-func (s *Struct) nested(val reflect.Value) interface{} {
-	var finalVal interface{}
-
-	v := reflect.ValueOf(val.Interface())
+func (s *Struct) nested(val interface{}) interface{} {
+	v := reflect.ValueOf(val)
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
-
 	switch v.Kind() {
 	case reflect.Struct:
-		n := New(val.Interface())
-		n.TagName = s.TagName
-		m := n.Map()
-
-		// do not add the converted value if there are no exported fields, ie:
-		// time.Time
+		m := New(val, s.tagName).Map()
 		if len(m) == 0 {
-			finalVal = val.Interface()
-		} else {
-			finalVal = m
+			return val
 		}
+		return m
 	case reflect.Map:
-		// get the element type of the map
-		mapElem := val.Type()
-		switch val.Type().Kind() {
-		case reflect.Ptr, reflect.Array, reflect.Map,
-			reflect.Slice, reflect.Chan:
-			mapElem = val.Type().Elem()
-			if mapElem.Kind() == reflect.Ptr {
-				mapElem = mapElem.Elem()
-			}
+		t := v.Type()
+		et := t.Elem()
+		if et.Kind() == reflect.Ptr {
+			et = et.Elem()
 		}
-
-		// only iterate over struct types, ie: map[string]StructType,
-		// map[string][]StructType,
-		if mapElem.Kind() == reflect.Struct ||
-			(mapElem.Kind() == reflect.Slice &&
-				mapElem.Elem().Kind() == reflect.Struct) {
-			m := make(map[string]interface{}, val.Len())
-			for _, k := range val.MapKeys() {
-				m[k.String()] = s.nested(val.MapIndex(k))
+		if t.Key().Kind() == reflect.String && (et.Kind() == reflect.Struct ||
+			((et.Kind() == reflect.Slice || et.Kind() == reflect.Array) && et.Elem().Kind() == reflect.Struct)) {
+			m := make(map[string]interface{}, v.Len())
+			p := reflect2.PtrOf(val)
+			mt := reflect2.Type2(t).(*reflect2.UnsafeMapType)
+			iter := mt.UnsafeIterate(unsafe.Pointer(&p))
+			kt := mt.Key()
+			vt := mt.Elem()
+			for iter.HasNext() {
+				kp, vp := iter.UnsafeNext()
+				m[kt.UnsafeIndirect(kp).(string)] = s.nested(vt.UnsafeIndirect(vp))
 			}
-			finalVal = m
-			break
+			return m
 		}
-
-		// TODO(arslan): should this be optional?
-		finalVal = val.Interface()
+		return val
 	case reflect.Slice, reflect.Array:
-		if val.Type().Kind() == reflect.Interface {
-			finalVal = val.Interface()
-			break
+		et := v.Type().Elem()
+		if et.Kind() != reflect.Struct &&
+			!(et.Kind() == reflect.Ptr && et.Elem().Kind() == reflect.Struct) {
+			return val
 		}
-
-		// TODO(arslan): should this be optional?
-		// do not iterate of non struct types, just pass the value. Ie: []int,
-		// []string, co... We only iterate further if it's a struct.
-		// i.e []foo or []*foo
-		if val.Type().Elem().Kind() != reflect.Struct &&
-			!(val.Type().Elem().Kind() == reflect.Ptr &&
-				val.Type().Elem().Elem().Kind() == reflect.Struct) {
-			finalVal = val.Interface()
-			break
+		val = v.Interface()
+		if v.Kind() == reflect.Array {
+			val = toSlice(val)
 		}
-
-		slices := make([]interface{}, val.Len())
-		for x := 0; x < val.Len(); x++ {
-			slices[x] = s.nested(val.Index(x))
+		n := (*reflect.SliceHeader)(reflect2.PtrOf(val)).Len
+		slices := make([]interface{}, n)
+		t := reflect2.TypeOf(val).(*reflect2.UnsafeSliceType)
+		et2 := t.Elem()
+		ptr := reflect2.PtrOf(val)
+		for i := 0; i < n; i++ {
+			slices[i] = s.nested(et2.UnsafeIndirect(t.UnsafeGetIndex(ptr, i)))
 		}
-		finalVal = slices
-	default:
-		finalVal = val.Interface()
+		return slices
 	}
+	return val
+}
 
-	return finalVal
+type eface struct {
+	typ unsafe.Pointer
+	ptr unsafe.Pointer
+}
+
+func unpackEFace(ptr *interface{}) *eface {
+	return (*eface)(unsafe.Pointer(ptr))
+}
+
+// sliceHeader is a safe version of SliceHeader used within this package.
+type sliceHeader struct {
+	Data unsafe.Pointer
+	Len  int
+	Cap  int
+}
+
+func unsafeToSlice(array interface{}, count int) unsafe.Pointer {
+	return unsafe.Pointer(&sliceHeader{
+		Data: reflect2.PtrOf(array),
+		Len:  count,
+		Cap:  count,
+	})
+}
+
+func toSlice(array interface{}) (slice interface{}) {
+	t := reflect.TypeOf(array)
+	sliceType := reflect.SliceOf(t.Elem())
+	sliceStruct := unpackEFace(&slice)
+	sliceStruct.typ = reflect2.PtrOf(sliceType)
+	sliceStruct.ptr = unsafeToSlice(array, t.Len())
+	return
 }

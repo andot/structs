@@ -95,12 +95,12 @@ func (f *Field) Zero() error {
 // of a nested struct . A struct tag with the content of "-" ignores the
 // checking of that particular field. Example:
 //
-//   // Field is ignored by this package.
-//   Field *http.Request `structs:"-"`
+//	// Field is ignored by this package.
+//	Field *http.Request `structs:"-"`
 //
 // It panics if field is not exported or if field's kind is not struct
 func (f *Field) Fields() []*Field {
-	return getFields(f.value, f.defaultTag)
+	return New(f.value.Interface(), f.defaultTag).Fields()
 }
 
 // Field returns the field from a nested struct. It panics if the nested struct
