@@ -18,4 +18,4 @@ before_install:
   - if ! go install github.com/golang/tools/cmd/cover; then go install golang.org/x/tools/cmd/cover; fi
 
 script:
-  - $HOME/gopath/bin/goveralls -service=travis-ci
+  - $GOPATH/bin/goveralls -service=travis-ci
