@@ -31,7 +31,7 @@ func (f *Field) Value() interface{} {
 	return f.value.Interface()
 }
 
-// IsEmbedded returns true if the given field is an anonymous field (embedded)
+// IsEmbedded returns true if the given field is an anonymous field (embedded).
 func (f *Field) IsEmbedded() bool {
 	return f.field.Anonymous
 }
@@ -50,7 +50,7 @@ func (f *Field) IsZero() bool {
 	return reflect.DeepEqual(current, zero)
 }
 
-// Name returns the name of the given field
+// Name returns the name of the given field.
 func (f *Field) Name() string {
 	return f.field.Name
 }
@@ -81,6 +81,7 @@ func (f *Field) Set(val interface{}) error {
 	}
 
 	f.value.Set(given)
+
 	return nil
 }
 
@@ -98,7 +99,7 @@ func (f *Field) Zero() error {
 //	// Field is ignored by this package.
 //	Field *http.Request `structs:"-"`
 //
-// It panics if field is not exported or if field's kind is not struct
+// It panics if field is not exported or if field's kind is not struct.
 func (f *Field) Fields() []*Field {
 	return New(f.value.Interface(), f.defaultTag).Fields()
 }
@@ -126,6 +127,7 @@ func (f *Field) FieldOk(name string) (*Field, bool) {
 		a := f.value.Addr()
 		value = &a
 	}
+
 	v := strctVal(value.Interface())
 	t := v.Type()
 

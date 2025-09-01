@@ -46,6 +46,7 @@ func newStructInfo(t reflect.Type, tagName string) (info *structInfo) {
 	t2 := reflect2.Type2(t).(*reflect2.UnsafeStructType)
 	fieldAccessors := getfieldAccessors(t2, tagName)
 	n := len(fieldAccessors)
+
 	info = &structInfo{
 		t:        t2,
 		name:     t2.Type.Name(),
@@ -58,8 +59,10 @@ func newStructInfo(t reflect.Type, tagName string) (info *structInfo) {
 		if !f.unexported {
 			info.names = append(info.names, name)
 		}
+
 		info.fieldMap[name] = f
 	}
+
 	return info
 }
 
@@ -67,15 +70,19 @@ func getfieldAccessors(t reflect2.StructType, tagName string) (fields []*fieldAc
 	for i, n := 0, t.NumField(); i < n; i++ {
 		f := t.Field(i)
 		ft := f.Type()
+
 		tag := f.Tag().Get(tagName)
 		if tag == "-" {
 			continue
 		}
+
 		alias, opitons := parseTag(tag)
 		if alias == "" {
 			alias = f.Name()
 		}
+
 		typ := ft.Type1()
+
 		field := &fieldAccessor{
 			t:          ft,
 			alias:      alias,
@@ -90,34 +97,42 @@ func getfieldAccessors(t reflect2.StructType, tagName string) (fields []*fieldAc
 		if ft.Kind() == reflect.Ptr {
 			ft = ft.(*reflect2.UnsafePtrType).Elem()
 		}
+
 		field.isStruct = (ft.Kind() == reflect.Struct)
 		field.flatten = field.flatten && !field.omitnested && (ft.Kind() == reflect.Map || field.isStruct)
 		fields = append(fields, field)
 	}
+
 	return fields
 }
 
 func getStructInfo(t reflect.Type, tagName string) *structInfo {
 	structInfoCacheLock.RLock()
+
 	if info, ok := structInfoCache[t]; ok {
 		structInfoCacheLock.RUnlock()
 		return info
 	}
+
 	structInfoCacheLock.RUnlock()
 	structInfoCacheLock.Lock()
+
 	info := newStructInfo(t, tagName)
 	structInfoCache[t] = info
+
 	structInfoCacheLock.Unlock()
+
 	return info
 }
 
 // Struct encapsulates a struct type to provide several high level functions
 // around the struct.
 type Struct struct {
+	*structInfo
+
 	raw     interface{}
 	value   reflect.Value
 	tagName string
-	*structInfo
 }
 
 // New returns a new *Struct with the struct s. It panics if the s's kind is
@@ -127,7 +142,9 @@ func New(s interface{}, tagName ...string) *Struct {
 	if len(tagName) > 0 {
 		name = tagName[0]
 	}
+
 	value := strctVal(s)
+
 	return &Struct{
 		raw:        s,
 		value:      value,
@@ -189,6 +206,7 @@ func (s *Struct) Map() map[string]interface{} {
 func (s *Struct) MapWithPrefix(prefix string) map[string]interface{} {
 	out := make(map[string]interface{})
 	s.FillMapWithPrefix(out, prefix)
+
 	return out
 }
 
@@ -202,28 +220,35 @@ func (s *Struct) FillMapWithPrefix(out map[string]interface{}, prefix string) {
 	if out == nil {
 		return
 	}
+
 	p := reflect2.PtrOf(s.raw)
 	for _, f := range s.fields {
 		// we can't access the value of unexported fields
 		if f.unexported {
 			continue
 		}
+
 		name := f.alias
+
 		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
 		if f.omitempty {
 			if reflect.DeepEqual(f.zero, val) {
 				continue
 			}
 		}
+
 		if f.tostring {
 			if s, ok := val.(fmt.Stringer); ok {
 				out[prefix+name] = s.String()
 			}
+
 			continue
 		}
+
 		if !f.omitnested {
 			val = s.nested(val)
 		}
+
 		if f.flatten {
 			if m, ok := val.(map[string]interface{}); ok {
 				for k, v := range m {
@@ -265,23 +290,27 @@ func (s *Struct) Values() (values []interface{}) {
 		if f.unexported {
 			continue
 		}
+
 		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
 		if f.omitempty {
 			if reflect.DeepEqual(f.zero, val) {
 				continue
 			}
 		}
+
 		if f.tostring {
 			if s, ok := val.(fmt.Stringer); ok {
 				values = append(values, s.String())
 			}
 		}
+
 		if f.isStruct && !f.omitnested {
 			values = append(values, New(val, s.tagName).Values()...)
 		} else {
 			values = append(values, val)
 		}
 	}
+
 	return
 }
 
@@ -300,6 +329,7 @@ func (s *Struct) Fields() (fields []*Field) {
 			defaultTag: s.tagName,
 		})
 	}
+
 	return fields
 }
 
@@ -313,6 +343,7 @@ func (s *Struct) Fields() (fields []*Field) {
 func (s *Struct) Names() []string {
 	names := make([]string, len(s.names))
 	copy(names, s.names)
+
 	return names
 }
 
@@ -323,6 +354,7 @@ func (s *Struct) Field(name string) *Field {
 	if !ok {
 		panic("field not found")
 	}
+
 	return f
 }
 
@@ -334,6 +366,7 @@ func (s *Struct) FieldOk(name string) (*Field, bool) {
 	if !ok {
 		return nil, false
 	}
+
 	return &Field{
 		value:      s.value.FieldByIndex(f.field.Index()),
 		field:      f.field.StructField,
@@ -364,17 +397,21 @@ func (s *Struct) IsZero() bool {
 		if f.unexported {
 			continue
 		}
+
 		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
 		if f.isStruct && !f.omitnested {
 			if !New(val, s.tagName).IsZero() {
 				return false
 			}
+
 			continue
 		}
+
 		if !reflect.DeepEqual(f.zero, val) {
 			return false
 		}
 	}
+
 	return true
 }
 
@@ -401,17 +438,21 @@ func (s *Struct) HasZero() bool {
 		if f.unexported {
 			continue
 		}
+
 		val := f.t.UnsafeIndirect(f.field.UnsafeGet(p))
 		if f.isStruct && !f.omitnested {
 			if New(val, s.tagName).HasZero() {
 				return true
 			}
+
 			continue
 		}
+
 		if reflect.DeepEqual(f.zero, val) {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -510,19 +551,23 @@ func (s *Struct) nested(val interface{}) interface{} {
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 	}
+
 	switch v.Kind() {
 	case reflect.Struct:
 		m := New(val, s.tagName).Map()
 		if len(m) == 0 {
 			return val
 		}
+
 		return m
 	case reflect.Map:
 		t := v.Type()
+
 		et := t.Elem()
 		if et.Kind() == reflect.Ptr {
 			et = et.Elem()
 		}
+
 		if t.Key().Kind() == reflect.String && (et.Kind() == reflect.Struct ||
 			((et.Kind() == reflect.Slice || et.Kind() == reflect.Array) && et.Elem().Kind() == reflect.Struct)) {
 			m := make(map[string]interface{}, v.Len())
@@ -531,33 +576,40 @@ func (s *Struct) nested(val interface{}) interface{} {
 			iter := mt.UnsafeIterate(unsafe.Pointer(&p))
 			kt := mt.Key()
 			vt := mt.Elem()
+
 			for iter.HasNext() {
 				kp, vp := iter.UnsafeNext()
 				m[kt.UnsafeIndirect(kp).(string)] = s.nested(vt.UnsafeIndirect(vp))
 			}
+
 			return m
 		}
+
 		return val
 	case reflect.Slice, reflect.Array:
 		et := v.Type().Elem()
-		if et.Kind() != reflect.Struct &&
-			!(et.Kind() == reflect.Ptr && et.Elem().Kind() == reflect.Struct) {
+		if et.Kind() != reflect.Struct && (et.Kind() != reflect.Ptr || et.Elem().Kind() != reflect.Struct) {
 			return val
 		}
+
 		val = v.Interface()
 		if v.Kind() == reflect.Array {
 			val = toSlice(val)
 		}
+
 		n := (*reflect.SliceHeader)(reflect2.PtrOf(val)).Len
 		slices := make([]interface{}, n)
 		t := reflect2.TypeOf(val).(*reflect2.UnsafeSliceType)
 		et2 := t.Elem()
+
 		ptr := reflect2.PtrOf(val)
 		for i := 0; i < n; i++ {
 			slices[i] = s.nested(et2.UnsafeIndirect(t.UnsafeGetIndex(ptr, i)))
 		}
+
 		return slices
 	}
+
 	return val
 }
 
@@ -591,5 +643,6 @@ func toSlice(array interface{}) (slice interface{}) {
 	sliceStruct := unpackEFace(&slice)
 	sliceStruct.typ = reflect2.PtrOf(sliceType)
 	sliceStruct.ptr = unsafeToSlice(array, t.Len())
+
 	return
 }

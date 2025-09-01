@@ -1,0 +1,79 @@
+version: "2"
+run:
+  build-tags:
+    - gojson
+  tests: false
+linters:
+  default: all
+  disable:
+    - contextcheck
+    - cyclop
+    - depguard
+    - dupl
+    - dupword
+    - durationcheck
+    - err113
+    - errorlint
+    - exhaustive
+    - exhaustruct
+    - forcetypeassert
+    - funlen
+    - gochecknoglobals
+    - gocognit
+    - gocyclo
+    - godox
+    - gosmopolitan
+    - inamedparam
+    - interfacebloat
+    - ireturn
+    - lll
+    - maintidx
+    - mnd
+    - nakedret
+    - nilnil
+    - nlreturn
+    - nonamedreturns
+    - paralleltest
+    - promlinter
+    - protogetter
+    - recvcheck
+    - revive
+    - sqlclosecheck
+    - tagliatelle
+    - testpackage
+    - usestdlibvars
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - zerologlint
+  settings:
+    gosec:
+      excludes:
+        - G204
+        - G404
+        - G115
+    nestif:
+      min-complexity: 6
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - .*generated.*.go$
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - .*generated.*.go$
+      - third_party$
+      - builtin$
+      - examples$
