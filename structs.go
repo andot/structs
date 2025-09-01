@@ -48,7 +48,7 @@ func newStructInfo(t reflect.Type, tagName string) (info *structInfo) {
 	n := len(fieldAccessors)
 	info = &structInfo{
 		t:        t2,
-		name:     t2.Name(),
+		name:     t2.Type.Name(),
 		names:    make([]string, 0, n),
 		fields:   fieldAccessors,
 		fieldMap: make(map[string]*fieldAccessor, n),
@@ -418,7 +418,7 @@ func (s *Struct) HasZero() bool {
 // Name returns the structs's type name within its package. For more info refer
 // to Name() function.
 func (s *Struct) Name() string {
-	return s.t.Name()
+	return s.t.Type.Name()
 }
 
 func strctVal(s interface{}) reflect.Value {
